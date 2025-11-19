@@ -6,10 +6,12 @@
 
 MAX30105 particleSensor;
 
+// heart rate variables
 long last_beat = 0;
 float beats_per_minute = 0;
 int beat_avg = 0;
 
+// Accelerometer variables
 const int zPin = A3;
 const int xPin = A0;
 const int yPin = A1;
@@ -31,18 +33,19 @@ float g_y, g_y_smoothed, accelY, accelY_smoothed, diffY, diffY_smoothed;
 float ySmoothedVoltage = RestVoltage;
 double AlphaAcc = 0.5;
 
+//Calibration variables
+const int CALIBRATION_SECONDS = 30;
+const int DELAY_TIME = 20; 
+const int button_pin = 0;
 bool calibrating = true;
 long calibration_start = 0;
 long calibration_heart_rate_sum = 0;
 long normal_heart_rate = 0;
-const int CALIBRATION_SECONDS = 30;
-const int DELAY_TIME = 20; 
-const int button_pin = 0;
 int button_pressed = 0;
 
+//sleep state variables
 bool sleeping = false; 
 long sleep_start = 0;
-const int CHECK_INTERVAL = 10; 
 double acc_sum = 0;
 long test_heart_rate_sum = 0;
 long last_check = 0;
@@ -50,47 +53,48 @@ long current_heart_rate = 0;
 long current_avg_acc = 0;
 double acc_mag = 0; 
 
+// Constants impacting sleep check
+const int CHECK_INTERVAL = 10; // Checks once in a ten second interval
 const double SLEEP_HEART_RATE_RATIO = 0.8;
 const double SLEEP_ACC = 0.5;
 const double WAKE_HEART_RATE_RATIO = 1.1;
 const double WAKE_ACC = 1;
 
-//----------------
-// Supporting Functions
-// read and average the voltage measured from accelerometer. Averaging is done
-// to remove the noise
+// read and average samples number of accelerometer inputs
+// Averaging is done to remove noise
 float readAveragedVoltage(int pin, int samples) {
   long sum = 0;
   for (int i = 0; i < samples; i++) {
     sum += analogRead(pin);
     delayMicroseconds(500);
   }
-//10-bit value converted to voltage between 0 and 5 volts
+  //convert 10-bit num`to a voltage between 0 and 5 volts
   return (sum / (float)samples) * (5.0 / 1023.0);
 }
-//-----
-// smooth out measured value for plotting
+
+// smooth the values to prevent abrupt changes
 float smooth(float newVal, float prevVal, double alpha) {
   return alpha * prevVal + (1 - alpha) * newVal;
-// return newVal;
 }
-
+// Initializes the system
 void setup() {
   Serial.begin(9600);                 
   delay(50);
 
   Wire.begin();
+  // prevents program from running if the sensor is not found
   if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
     Serial.println("MAX3010x not found. Check wiring/power.");
     while (1) { delay(10); }
   }
-
+  // initializes sensor
   particleSensor.setup();                
   particleSensor.setPulseAmplitudeRed(0x0A);   // Red LED on
   particleSensor.setPulseAmplitudeIR(0x0A);    // IR LED on 
   particleSensor.setPulseAmplitudeGreen(0);    // Green off
 }
 
+// main loop of the code, where recurring events take place
 void loop() {
   long ir_value = particleSensor.getIR(); 
 
@@ -99,37 +103,52 @@ void loop() {
 
   // When a beat is detected
   if (finger_present && checkForBeat(ir_value)) { 
-    long delta = millis() - last_beat;             // ms between beats
-    last_beat = millis();
+    long delta = millis() - last_beat; // ms between beats
+    last_beat = millis(); // update beat time
+    // if actually a new beat, check to ensure something hasn't gone wrong
     if (delta > 0) {
-      beats_per_minute = 60.0 / (delta / 1000.0);   // BPM
+      beats_per_minute = 60.0 / (delta / 1000.0); // BPM
     }
   }
+  // calibration state 
   if (calibrating){
     beats_per_minute = max(min(beats_per_minute, 255), 40); // Correct values if they are obviously nonsensical
+    // Adds BPM value to a sum so we can calculate the average later
     calibration_heart_rate_sum += beats_per_minute;
+    // If the calibration is finished
     if (millis() - calibration_start >= CALIBRATION_SECONDS*1000){
-      normal_heart_rate = calibration_heart_rate_sum/(CALIBRATION_SECONDS*1000/DELAY_TIME);
+      // Note here the time is increased due to the time spent while reading accelerometer data
+      // We find the number of samples within the time interval
+      // and divide the total by that amount
+      // to find the average heart rate
+      normal_heart_rate = calibration_heart_rate_sum/((millis() - calibration_start)/(DELAY_TIME+3*SAMPLES/2));
+      // reset variables
       calibration_heart_rate_sum = 0; 
       calibrating = false;
+      last_check = millis();
+      // Display this average heart rate 
       Serial.print("Their normal heart rate is: ");
-      Serial.println(normal_heart_rate;)
+      Serial.println(normal_heart_rate);
     }
   }
+  // not calibrating
   else{
     // accelerometer data
+    // get for each of x, y, and z 
+    // take difference between consecutive accelerometer data
+    // to accommodate for our accelerometer outputting large negative values
+    // at certain orientations
+    // z data  
     zVoltage = readAveragedVoltage(zPin, SAMPLES);
     zSmoothedVoltage = smooth(zVoltage, zSmoothedVoltage, AlphaAcc);
     g_z = (zVoltage - RestVoltage) / sensitivity;
     g_z_smoothed = (zSmoothedVoltage - RestVoltage) / sensitivity;
-    // Serial.print(g_z_smoothed*9.81);
-    // Serial.print(",");
     diffZ = g_z*9.81 - accelZ;
     diffZ_smoothed = g_z_smoothed * 9.81 - accelZ_smoothed;
     accelZ = g_z * 9.81; //convert gravities to ms^2
     accelZ_smoothed = g_z_smoothed * 9.81;
 
-
+    // x data
     xVoltage = readAveragedVoltage(xPin, SAMPLES);
     xSmoothedVoltage = smooth(xVoltage, xSmoothedVoltage, AlphaAcc);
     g_x = (xVoltage - RestVoltage) / sensitivity;
@@ -139,6 +158,7 @@ void loop() {
     accelX = g_x * 9.81; //convert gravities to ms^2
     accelX_smoothed = g_x_smoothed * 9.81;
 
+    // y data
     yVoltage = readAveragedVoltage(yPin, SAMPLES);
     ySmoothedVoltage = smooth(yVoltage, ySmoothedVoltage, AlphaAcc);
     g_y = (yVoltage - RestVoltage) / sensitivity;
@@ -148,63 +168,77 @@ void loop() {
     accelY = g_y * 9.81; //convert gravities to ms^2
     accelY_smoothed = g_y_smoothed * 9.81;
 
-    acc_mag = sqrt(diffX^2 + diffY^2 + diffZ^2);
+    // find the magnitude of the observed acceleration by taking the norm of the vector
+    acc_mag = sqrt(diffX*diffX + diffY*diffY + diffZ*diffZ);
+    // keep a heart rate sum, which we will use to calculate the average heart rate in the interval
     test_heart_rate_sum += beats_per_minute;
-    if (millis() - last_check >= CHECK_INTERVAL*1000){
-      current_heart_rate = test_heart_rate_sum/(CHECK_INTERVAL*1000/DELAY_TIME);
-      test_heart_rate_sum = 0;
-      last_check = millis();
-    }
+    // we also keep an acceleration sum for the same purpose
     acc_sum += acc_mag;
+    // after we have gathered data for 10 seconds, we use it to get an average data.
+
     if (millis() - last_check >= CHECK_INTERVAL*1000){
-      current_avg_acc = acc_sum/(CHECK_INTERVAL*1000/DELAY_TIME);
+      // calculate average heart rate on interval
+      current_heart_rate = test_heart_rate_sum/(CHECK_INTERVAL*1000/(DELAY_TIME+3*0.5*SAMPLES));
+      // calculate average acceleration on the interval
+      current_avg_acc = acc_sum/(CHECK_INTERVAL*1000/(DELAY_TIME+3*0.5*SAMPLES));
+      // reset variables
+      test_heart_rate_sum = 0;
       acc_sum = 0;
       last_check = millis();
     }
-
+    // waking state
     if (!sleeping){
-      if (current_heart_rate < SLEEP_HEART_RATE_RATIO*normal_heart_rate && curr_avg_acc < SLEEP_ACC){
+      // check conditions for transition to sleep state
+      // here it's a lower heart rate and a low amount of movement
+      if (current_heart_rate < SLEEP_HEART_RATE_RATIO*normal_heart_rate && current_avg_acc < SLEEP_ACC){
         sleeping = true;
         sleep_start = millis();
       }
     }
+    // sleeping state
     else{
-      if (curr_heart_rate > WAKE_HEART_RATE_RATIO*normal_heart_rate && curr_avg_acc > WAKE_ACC){
+      // check conditions for waking
+      // here it is a higher heart rate and a decent amount of movement
+      if (current_heart_rate > WAKE_HEART_RATE_RATIO*normal_heart_rate && current_avg_acc > WAKE_ACC){
         sleeping = false;
+        // print out the amount of time they've been sleeping
         Serial.print("They have been sleeping for ");
         Serial.println((millis() - sleep_start)/(3600*1000));
       }
     }
   }
 
-  // Basic status prints (adjust as you like)
-  Serial.print("IR: "); Serial.print(ir_value);
-  Serial.print("  BPM: "); Serial.print(beats_per_minute, 1);
-  Serial.print("  Avg: "); Serial.println(beat_avg);
-
-  // If no finger detected for a while, you can zero the average:
-  // if (!finger_present) beat_avg = 0;
-
-  //rising edge
+  //rising edge signal for button press
   if (digitalRead(button_pin) == 1 && button_pressed == 0){
+    // currently in calibration state
     if (calibrating){
-      normal_heart_rate = calibration_heart_rate_sum/((millis() - calibration_start)/DELAY_TIME);
+      // calculate heart rate with current data
+      normal_heart_rate = calibration_heart_rate_sum/((millis() - calibration_start)/(DELAY_TIME+3*0.5*SAMPLES));
+      // output calibrated heart rate
       Serial.print("Their normal heart rate is: ");
-      Serial.println(normal_heart_rate;)
+      Serial.println(normal_heart_rate);
     }
+    // not in calibrating state, either in sleeping or waking state 
     else{
-      sleeping = false;
-      Serial.print("They have been sleeping for ");
-      Serial.println((millis() - sleep_start)/(3600*1000));
+      // if in sleeping state, forcibly turn off that state
+      // as pushing the calibration button means they're awake 
+      if (sleeping){
+        sleeping = false;
+        Serial.print("They have been sleeping for ");
+        Serial.println((millis() - sleep_start)/(3600*1000));
+      }
     }
     calibrating ^= 1; //flip calibration
+    // reset variables
     calibration_heart_rate_sum = 0;
     test_heart_rate_sum = 0;
     acc_sum = 0;
-  
+    last_check = millis();
+    calibration_start = millis();
   }
+  // read button input
   button_pressed = digitalRead(button_pin);
   
 
-  delay(20);  // small delay; avoid big delays that distort beat timing
+  delay(DELAY_TIME);  // small delay to avoid disrupting heart rate measurement
 }
