@@ -34,31 +34,34 @@ float ySmoothedVoltage = RestVoltage;
 double AlphaAcc = 0.5;
 
 //Calibration variables
-const int CALIBRATION_SECONDS = 30;
+const int CALIBRATION_SECONDS = 15;
 const int DELAY_TIME = 20; 
-const int button_pin = 0;
+const int button_pin = 2;
 bool calibrating = true;
 long calibration_start = 0;
-long calibration_heart_rate_sum = 0;
-long normal_heart_rate = 0;
+double calibration_heart_rate_sum = 0;
+double normal_heart_rate = 0;
 int button_pressed = 0;
+long num_of_calibration_checks = 0;
 
 //sleep state variables
 bool sleeping = false; 
 long sleep_start = 0;
 double acc_sum = 0;
-long test_heart_rate_sum = 0;
+double test_heart_rate_sum = 0;
 long last_check = 0;
-long current_heart_rate = 0;
-long current_avg_acc = 0;
+double current_heart_rate = 0;
+double current_avg_acc = 0;
 double acc_mag = 0; 
+long test_num_heart_rate_checks = 0;
+long test_num_acc_checks = 0;
 
 // Constants impacting sleep check
 const int CHECK_INTERVAL = 10; // Checks once in a ten second interval
-const double SLEEP_HEART_RATE_RATIO = 0.8;
-const double SLEEP_ACC = 0.5;
+const double SLEEP_HEART_RATE_RATIO = 0.9;
+const double SLEEP_ACC = 0.2;
 const double WAKE_HEART_RATE_RATIO = 1.1;
-const double WAKE_ACC = 1;
+const double WAKE_ACC = 0.5;
 
 // read and average samples number of accelerometer inputs
 // Averaging is done to remove noise
@@ -96,36 +99,50 @@ void setup() {
 
 // main loop of the code, where recurring events take place
 void loop() {
-  long ir_value = particleSensor.getIR(); 
 
-  // Check if there is actually a finger on the sensor 
-  bool finger_present = ir_value > 5000;
-
-  // When a beat is detected
-  if (finger_present && checkForBeat(ir_value)) { 
-    long delta = millis() - last_beat; // ms between beats
-    last_beat = millis(); // update beat time
-    // if actually a new beat, check to ensure something hasn't gone wrong
-    if (delta > 0) {
-      beats_per_minute = 60.0 / (delta / 1000.0); // BPM
-    }
-  }
   // calibration state 
   if (calibrating){
-    beats_per_minute = max(min(beats_per_minute, 255), 40); // Correct values if they are obviously nonsensical
-    // Adds BPM value to a sum so we can calculate the average later
-    calibration_heart_rate_sum += beats_per_minute;
+    long ir_value = particleSensor.getIR(); 
+
+    // Check if there is actually a finger on the sensor 
+    bool finger_present = ir_value > 5000;
+
+    // When a beat is detected
+    if (finger_present && checkForBeat(ir_value)) { 
+      long delta = millis() - last_beat; // ms between beats
+      last_beat = millis(); // update beat time
+      // if actually a new beat, check to ensure something hasn't gone wrong
+      if (delta > 0) {
+        beats_per_minute = 60.0 / (delta / 1000.0); // BPM
+      }
+      beats_per_minute = max(min(beats_per_minute, 255), 40); // Correct values if they are obviously nonsensical
+      // Adds BPM value to a sum so we can calculate the average later
+      calibration_heart_rate_sum += beats_per_minute;
+      num_of_calibration_checks++;
+    }
+
+
     // If the calibration is finished
     if (millis() - calibration_start >= CALIBRATION_SECONDS*1000){
-      // Note here the time is increased due to the time spent while reading accelerometer data
       // We find the number of samples within the time interval
       // and divide the total by that amount
       // to find the average heart rate
-      normal_heart_rate = calibration_heart_rate_sum/((millis() - calibration_start)/(DELAY_TIME+3*SAMPLES/2));
+
+      // handle possible division by 0
+      if(num_of_calibration_checks != 0){
+        normal_heart_rate = calibration_heart_rate_sum/num_of_calibration_checks;
+      }
+      else{
+        normal_heart_rate = 60;
+      }
       // reset variables
       calibration_heart_rate_sum = 0; 
       calibrating = false;
       last_check = millis();
+      sleeping = false;
+      //temporary, before first measurement
+      current_heart_rate = normal_heart_rate;
+      current_avg_acc = 0;
       // Display this average heart rate 
       Serial.print("Their normal heart rate is: ");
       Serial.println(normal_heart_rate);
@@ -170,19 +187,47 @@ void loop() {
 
     // find the magnitude of the observed acceleration by taking the norm of the vector
     acc_mag = sqrt(diffX*diffX + diffY*diffY + diffZ*diffZ);
-    // keep a heart rate sum, which we will use to calculate the average heart rate in the interval
-    test_heart_rate_sum += beats_per_minute;
     // we also keep an acceleration sum for the same purpose
     acc_sum += acc_mag;
+    test_num_acc_checks++;
     // after we have gathered data for 10 seconds, we use it to get an average data.
+    long ir_value = particleSensor.getIR(); 
 
+    // Check if there is actually a finger on the sensor 
+    bool finger_present = ir_value > 5000;
+
+    // When a beat is detected
+    if (finger_present && checkForBeat(ir_value)) { 
+      long delta = millis() - last_beat; // ms between beats
+      last_beat = millis(); // update beat time
+      // if actually a new beat, check to ensure something hasn't gone wrong
+      if (delta > 0) {
+        beats_per_minute = 60.0 / (delta / 1000.0); // BPM
+      }
+      // keep a heart rate sum, which we will use to calculate the average heart rate in the interval
+      beats_per_minute = max(min(beats_per_minute, 255), 40); // Correct values if they are obviously nonsensical
+      test_heart_rate_sum += beats_per_minute;
+      test_num_heart_rate_checks++;
+    }
     if (millis() - last_check >= CHECK_INTERVAL*1000){
       // calculate average heart rate on interval
-      current_heart_rate = test_heart_rate_sum/(CHECK_INTERVAL*1000/(DELAY_TIME+3*0.5*SAMPLES));
+      if (test_num_heart_rate_checks != 0){
+        current_heart_rate = test_heart_rate_sum/(test_num_heart_rate_checks);
+      }
+      else{
+        current_heart_rate = 60;
+      }
       // calculate average acceleration on the interval
-      current_avg_acc = acc_sum/(CHECK_INTERVAL*1000/(DELAY_TIME+3*0.5*SAMPLES));
+      if (test_num_acc_checks != 0){
+        current_avg_acc = acc_sum/test_num_acc_checks;
+      }
+      else{
+        current_avg_acc = 0;
+      }
       // reset variables
       test_heart_rate_sum = 0;
+      test_num_heart_rate_checks = 0;
+      test_num_acc_checks = 0;
       acc_sum = 0;
       last_check = millis();
     }
@@ -191,6 +236,7 @@ void loop() {
       // check conditions for transition to sleep state
       // here it's a lower heart rate and a low amount of movement
       if (current_heart_rate < SLEEP_HEART_RATE_RATIO*normal_heart_rate && current_avg_acc < SLEEP_ACC){
+        Serial.println("They have started sleeping.");
         sleeping = true;
         sleep_start = millis();
       }
@@ -199,11 +245,12 @@ void loop() {
     else{
       // check conditions for waking
       // here it is a higher heart rate and a decent amount of movement
-      if (current_heart_rate > WAKE_HEART_RATE_RATIO*normal_heart_rate && current_avg_acc > WAKE_ACC){
+      if (current_heart_rate > WAKE_HEART_RATE_RATIO*normal_heart_rate || current_avg_acc > WAKE_ACC){
         sleeping = false;
         // print out the amount of time they've been sleeping
         Serial.print("They have been sleeping for ");
-        Serial.println((millis() - sleep_start)/(3600*1000));
+        Serial.print((millis() - sleep_start)/(3600*1000));
+        Serial.println(" hours");
       }
     }
   }
@@ -213,7 +260,12 @@ void loop() {
     // currently in calibration state
     if (calibrating){
       // calculate heart rate with current data
-      normal_heart_rate = calibration_heart_rate_sum/((millis() - calibration_start)/(DELAY_TIME+3*0.5*SAMPLES));
+      if (test_num_heart_rate_checks != 0){
+        normal_heart_rate = calibration_heart_rate_sum/(test_num_heart_rate_checks);
+      }
+      else{
+        normal_heart_rate = 60;
+      }
       // output calibrated heart rate
       Serial.print("Their normal heart rate is: ");
       Serial.println(normal_heart_rate);
@@ -225,16 +277,24 @@ void loop() {
       if (sleeping){
         sleeping = false;
         Serial.print("They have been sleeping for ");
-        Serial.println((millis() - sleep_start)/(3600*1000));
+        Serial.print((millis() - sleep_start)/(3600*1000.0));
+        Serial.println(" hours.");
       }
     }
     calibrating ^= 1; //flip calibration
     // reset variables
     calibration_heart_rate_sum = 0;
     test_heart_rate_sum = 0;
+    test_num_heart_rate_checks = 0;
+    test_num_acc_checks = 0;
     acc_sum = 0;
     last_check = millis();
     calibration_start = millis();
+    num_of_calibration_checks = 0;
+    //temporary, before first measurement
+    current_heart_rate = normal_heart_rate;
+    current_avg_acc = 0;
+
   }
   // read button input
   button_pressed = digitalRead(button_pin);
